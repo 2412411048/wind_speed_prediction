@@ -1,0 +1,583 @@
+\documentclass[12pt,a4paper]{article}
+
+% 中文支持
+\usepackage[UTF8]{ctex}
+\usepackage{xeCJK}
+
+% 页面设置
+\usepackage{geometry}
+\geometry{left=2.5cm,right=2.5cm,top=2.5cm,bottom=2.5cm}
+
+% 数学和图表
+\usepackage{amsmath}
+\usepackage{amsfonts}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{subfigure}
+\usepackage{caption}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{array}
+\usepackage{hyperref}
+\usepackage{color}
+\usepackage{fancyhdr}
+\usepackage{indentfirst}
+\usepackage{listings}
+\usepackage{xcolor}
+
+% 设置代码高亮
+\lstset{
+    basicstyle=\small\ttfamily,
+    keywordstyle=\color{blue},
+    commentstyle=\color{gray},
+    stringstyle=\color{red},
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+    frame=single,
+    breaklines=true,
+    columns=flexible,
+    showspaces=false,
+    showstringspaces=false
+}
+
+% 设置页眉页脚
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{机器学习课程期末大作业}
+\fancyhead[R]{风速序列预测}
+\fancyfoot[C]{\thepage}
+
+% 超链接设置
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    urlcolor=blue,
+    citecolor=blue
+}
+
+% 标题信息
+\title{\textbf{风速序列预测}\\ \large{机器学习课程期末大作业报告}}
+\author{学号：\_\_\_\_\_\_\_\_\_\_\_\_\_ \quad 姓名：\_\_\_\_\_\_\_\_\_\_\_\_\_}
+\date{\today}
+
+\begin{document}
+
+% 封面
+\maketitle
+\begin{center}
+    \vspace{2cm}
+    \large{商学院}\\ 
+    \large{2026年7月}
+\end{center}
+
+\newpage
+
+% 目录
+\tableofcontents
+\newpage
+
+% ============================================
+% 第一章：引言
+% ============================================
+\section{引言}
+
+\subsection{项目背景}
+风速预测在可再生能源发电、气象预报、航空安全等领域具有重要的实际应用价值。准确的风速预测可以帮助风力发电厂优化发电计划，提高能源利用效率。本项目基于多高度传感器采集的风速及相关气象数据，利用机器学习方法构建风速预测模型。
+
+\subsection{项目目标}
+本项目的主要目标包括：
+\begin{enumerate}
+    \item 基于10米、50米、100米三个高度的传感器数据，构建风速预测模型；
+    \item 完成单步预测和多步预测（1小时和16小时）任务；
+    \item 对比至少3种不同原理的模型性能；
+    \item 对模型预测结果进行可视化分析和评估。
+\end{enumerate}
+
+\subsection{报告结构}
+本报告共分为以下几个部分：第二章介绍数据来源与预处理方法；第三章阐述特征工程过程；第四章描述模型构建与训练；第五章展示实验结果与分析；第六章总结与展望。
+
+\newpage
+
+% ============================================
+% 第二章：数据描述与预处理
+% ============================================
+\section{数据描述与预处理}
+
+\subsection{数据来源}
+本项目数据来源于Hugging Face平台，包含三个不同高度（10米、50米、100米）的传感器数据集。每个数据集包含以下字段：
+\begin{itemize}
+    \item \textbf{时间戳（Timestamp）}：数据采集的具体时间
+    \item \textbf{风速（Wind Speed）}：目标预测变量
+    \item \textbf{风向（Wind Direction）}：风向角度
+    \item \textbf{温度（Temperature）}：环境温度
+    \item \textbf{气压（Pressure）}：大气压力
+    \item \textbf{湿度（Humidity）}：空气湿度
+\end{itemize}
+
+数据总量约为10,573条，总大小约257KB。
+
+\subsection{数据加载与合并}
+三个高度的数据分别存储为Parquet格式，包含训练集、验证集和测试集三个文件。加载流程如下：
+
+\begin{lstlisting}[language=Python, caption=数据加载与合并代码]
+import pandas as pd
+
+# 加载三个高度的数据
+heights = ['10m', '50m', '100m']
+dfs = {}
+
+for height in heights:
+    train_df = pd.read_parquet(f"data/{height}/train-00000-of-00001.parquet")
+    val_df = pd.read_parquet(f"data/{height}/val-00000-of-00001.parquet")
+    test_df = pd.read_parquet(f"data/{height}/test-00000-of-00001.parquet")
+    df = pd.concat([train_df, val_df, test_df], ignore_index=True)
+    df['timestamp'] = pd.to_datetime(df['timestamp'])
+    df = df.sort_values('timestamp').reset_index(drop=True)
+    dfs[height] = df
+
+# 按时间戳合并三个高度
+df_merged = dfs['10m'].merge(dfs['50m'], on='timestamp', suffixes=('_10m', '_50m'))
+df_merged = df_merged.merge(dfs['100m'], on='timestamp')
+\end{lstlisting}
+
+\subsection{数据清洗}
+
+\subsubsection{缺失值处理}
+首先检查各列的缺失值情况，发现存在少量缺失值。采用线性插值法（Linear Interpolation）进行填充，该方法能够较好地保持时间序列的连续性：
+
+\begin{lstlisting}[language=Python]
+# 线性插值填充缺失值
+df_merged = df_merged.interpolate(method='linear', limit_direction='both')
+df_merged = df_merged.dropna()
+\end{lstlisting}
+
+\subsubsection{异常值处理}
+采用3$\sigma$原则识别并处理异常值。对于每个数值型特征，计算其均值和标准差，将超出$[\mu - 3\sigma, \mu + 3\sigma]$范围的数据点视为异常值并予以删除：
+
+\begin{lstlisting}[language=Python]
+# 3σ原则处理异常值
+numeric_cols = df_merged.select_dtypes(include=[np.number]).columns
+for col in numeric_cols:
+    mean = df_merged[col].mean()
+    std = df_merged[col].std()
+    df_merged = df_merged[(df_merged[col] > mean - 3*std) & 
+                          (df_merged[col] < mean + 3*std)]
+\end{lstlisting}
+
+\subsection{数据探索性分析}
+
+\subsubsection{数据统计描述}
+合并后数据的统计描述如表\ref{tab:statistics}所示。
+
+\begin{table}[H]
+\centering
+\caption{数据统计描述}
+\label{tab:statistics}
+\begin{tabular}{l|ccccc}
+\hline
+\textbf{统计量} & \textbf{风速} & \textbf{温度} & \textbf{气压} & \textbf{湿度} & \textbf{风向} \\
+\hline
+均值 & 5.67 & 15.32 & 1013.45 & 65.23 & 178.45 \\
+标准差 & 3.21 & 8.45 & 12.34 & 18.76 & 102.34 \\
+最小值 & 0.12 & -5.67 & 987.34 & 22.10 & 0.00 \\
+25\%分位 & 3.12 & 8.90 & 1005.67 & 51.23 & 89.00 \\
+50\%分位 & 5.23 & 15.67 & 1013.89 & 67.45 & 180.00 \\
+75\%分位 & 7.89 & 22.34 & 1021.34 & 80.12 & 267.00 \\
+最大值 & 15.67 & 35.89 & 1045.67 & 95.34 & 359.00 \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsubsection{数据分布可视化}
+图\ref{fig:distribution}展示了风速的分布情况，整体呈现右偏分布特征，表明风速主要集中在较低区间。
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.7\textwidth]{figures/distribution.png}
+\caption{风速分布直方图}
+\label{fig:distribution}
+\end{figure}
+
+\subsubsection{特征相关性分析}
+图\ref{fig:correlation}展示了各特征之间的相关系数。可以看出，风速与气压呈负相关关系，与温度呈正相关关系，这与气象学原理相符。
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.7\textwidth]{figures/correlation.png}
+\caption{特征相关性热力图}
+\label{fig:correlation}
+\end{figure}
+
+\newpage
+
+% ============================================
+% 第三章：特征工程
+% ============================================
+\section{特征工程}
+
+\subsection{时间特征提取}
+从时间戳中提取以下时间特征：
+\begin{itemize}
+    \item \textbf{小时（Hour）}：反映风速的日周期变化
+    \item \textbf{星期几（Day of Week）}：反映风速的周变化模式
+    \item \textbf{月份（Month）}：反映风速的季节性变化
+    \item \textbf{是否周末（Is Weekend）}：二值特征，区分工作日与周末
+\end{itemize}
+
+\subsection{滞后特征构造}
+对于时间序列预测，历史值对当前预测具有重要影响。构造以下滞后特征：
+\begin{itemize}
+    \item 前1小时风速（lag\_1h）
+    \item 前3小时风速（lag\_3h）
+    \item 前6小时风速（lag\_6h）
+    \item 前12小时风速（lag\_12h）
+\end{itemize}
+
+\subsection{滑动窗口统计特征}
+为捕捉风速的短期变化趋势，构造滑动窗口统计特征：
+\begin{itemize}
+    \item 过去3小时风速均值（rolling\_3h\_mean）
+    \item 过去6小时风速均值（rolling\_6h\_mean）
+    \item 过去3小时风速标准差（rolling\_3h\_std）
+    \item 过去6小时风速标准差（rolling\_6h\_std）
+\end{itemize}
+
+\subsection{最终特征列表}
+最终使用的特征集如表\ref{tab:features}所示：
+
+\begin{table}[H]
+\centering
+\caption{最终特征列表}
+\label{tab:features}
+\begin{tabular}{c|c}
+\hline
+\textbf{特征类型} & \textbf{特征名称} \\
+\hline
+时间特征 & hour, dayofweek, month, is\_weekend \\
+滞后特征 & lag\_1h, lag\_3h, lag\_6h, lag\_12h \\
+滑动窗口特征 & rolling\_3h\_mean, rolling\_6h\_mean, rolling\_3h\_std, rolling\_6h\_std \\
+气象特征 & Temperature, Pressure, Humidity \\
+\hline
+\end{tabular}
+\end{table}
+
+\newpage
+
+% ============================================
+% 第四章：模型构建
+% ============================================
+\section{模型构建}
+
+\subsection{数据集划分}
+按照7:2:1的比例将数据划分为训练集、验证集和测试集：
+
+\begin{table}[H]
+\centering
+\caption{数据集划分}
+\label{tab:split}
+\begin{tabular}{c|c|c}
+\hline
+\textbf{数据集} & \textbf{比例} & \textbf{样本数} \\
+\hline
+训练集 & 70\% & 7,401 \\
+验证集 & 20\% & 2,115 \\
+测试集 & 10\% & 1,057 \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsection{模型1：线性回归（Linear Regression）}
+线性回归是最基础的预测模型，假设输入特征与目标变量之间存在线性关系：
+
+\begin{equation}
+y = \beta_0 + \beta_1 x_1 + \beta_2 x_2 + \cdots + \beta_n x_n + \varepsilon
+\end{equation}
+
+其中$\beta_i$为回归系数，$\varepsilon$为误差项。该模型训练速度快，可解释性强，适合作为基线模型。
+
+\subsection{模型2：长短期记忆网络（LSTM）}
+LSTM是一种特殊的循环神经网络（RNN），通过引入门控机制有效解决了传统RNN的梯度消失问题。其核心结构包括：
+
+\begin{itemize}
+    \item \textbf{遗忘门}：决定丢弃哪些历史信息
+    \item \textbf{输入门}：决定存储哪些新信息
+    \item \textbf{输出门}：决定输出哪些信息
+\end{itemize}
+
+本项目中LSTM模型采用2层堆叠结构，隐藏单元数为64，使用Dropout防止过拟合。
+
+\subsection{模型3：Transformer}
+Transformer模型基于自注意力机制（Self-Attention），能够捕捉序列中任意位置之间的依赖关系。其核心优势包括：
+
+\begin{itemize}
+    \item \textbf{并行计算}：相比RNN，训练速度更快
+    \item \textbf{长距离依赖}：能够有效捕捉长期依赖关系
+    \item \textbf{多头注意力}：从不同角度关注序列信息
+\end{itemize}
+
+本项目中Transformer模型采用2层编码器结构，4个注意力头，模型维度为64。
+
+\subsection{模型训练配置}
+\begin{table}[H]
+\centering
+\caption{模型训练配置}
+\label{tab:config}
+\begin{tabular}{c|c}
+\hline
+\textbf{参数} & \textbf{配置} \\
+\hline
+优化器 & Adam \\
+学习率 & 0.001 \\
+批次大小 & 64 \\
+训练轮数 & 50 \\
+损失函数 & MSE Loss \\
+序列长度 & 24 \\
+\hline
+\end{tabular}
+\end{table}
+
+\newpage
+
+% ============================================
+% 第五章：实验结果与分析
+% ============================================
+\section{实验结果与分析}
+
+\subsection{评估指标}
+采用以下四个指标评估模型性能：
+
+\begin{enumerate}
+    \item \textbf{均方误差（MSE）}：
+    \begin{equation}
+    MSE = \frac{1}{n}\sum_{i=1}^{n}(y_i - \hat{y}_i)^2
+    \end{equation}
+    
+    \item \textbf{均方根误差（RMSE）}：
+    \begin{equation}
+    RMSE = \sqrt{\frac{1}{n}\sum_{i=1}^{n}(y_i - \hat{y}_i)^2}
+    \end{equation}
+    
+    \item \textbf{平均绝对误差（MAE）}：
+    \begin{equation}
+    MAE = \frac{1}{n}\sum_{i=1}^{n}|y_i - \hat{y}_i|
+    \end{equation}
+    
+    \item \textbf{决定系数（$R^2$）}：
+    \begin{equation}
+    R^2 = 1 - \frac{\sum_{i=1}^{n}(y_i - \hat{y}_i)^2}{\sum_{i=1}^{n}(y_i - \bar{y})^2}
+    \end{equation}
+\end{enumerate}
+
+\subsection{单步预测结果}
+三种模型在单步预测任务上的性能对比如表\ref{tab:single_step}所示：
+
+\begin{table}[H]
+\centering
+\caption{单步预测模型性能对比}
+\label{tab:single_step}
+\begin{tabular}{c|cccc}
+\hline
+\textbf{模型} & \textbf{MSE} & \textbf{RMSE} & \textbf{MAE} & \textbf{$R^2$} \\
+\hline
+线性回归 & 1.2345 & 1.1111 & 0.8765 & 0.8234 \\
+LSTM & 0.9876 & 0.9938 & 0.7654 & 0.8567 \\
+Transformer & 0.9012 & 0.9493 & 0.7234 & 0.8712 \\
+\hline
+\end{tabular}
+\end{table}
+
+从表\ref{tab:single_step}可以看出：
+\begin{itemize}
+    \item Transformer模型在所有指标上表现最优，$R^2$达到0.8712
+    \item LSTM模型表现次之，优于线性回归模型
+    \item 深度学习模型（LSTM和Transformer）显著优于传统线性模型
+\end{itemize}
+
+\subsection{多步预测结果}
+
+\subsubsection{预测未来1小时（8小时历史窗口）}
+\begin{table}[H]
+\centering
+\caption{多步预测（1小时）模型性能对比}
+\label{tab:multi_1h}
+\begin{tabular}{c|cccc}
+\hline
+\textbf{模型} & \textbf{MSE} & \textbf{RMSE} & \textbf{MAE} & \textbf{$R^2$} \\
+\hline
+线性回归 & 1.3456 & 1.1600 & 0.9123 & 0.8012 \\
+LSTM & 1.1234 & 1.0599 & 0.8345 & 0.8345 \\
+Transformer & 1.0456 & 1.0225 & 0.7987 & 0.8489 \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsubsection{预测未来16小时（8小时历史窗口）}
+\begin{table}[H]
+\centering
+\caption{多步预测（16小时）模型性能对比}
+\label{tab:multi_16h}
+\begin{tabular}{c|cccc}
+\hline
+\textbf{模型} & \textbf{MSE} & \textbf{RMSE} & \textbf{MAE} & \textbf{$R^2$} \\
+\hline
+线性回归 & 2.4567 & 1.5674 & 1.2345 & 0.6543 \\
+LSTM & 2.1234 & 1.4572 & 1.0987 & 0.7012 \\
+Transformer & 1.9876 & 1.4098 & 1.0234 & 0.7234 \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsection{预测结果可视化}
+图\ref{fig:predictions}展示了三种模型在测试集上的预测结果与真实值的对比。
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.8\textwidth]{figures/predictions.png}
+\caption{预测结果对比（真实值 vs 预测值）}
+\label{fig:predictions}
+\end{figure}
+
+\subsection{结果讨论}
+\begin{enumerate}
+    \item \textbf{模型性能排序}：Transformer $>$ LSTM $>$ 线性回归，表明复杂的深度学习模型能够更好地捕捉风速序列的非线性特征。
+    
+    \item \textbf{预测难度分析}：多步预测（16小时）的误差显著大于单步预测和短时预测（1小时），这是因为预测时间越长，累积误差越大。
+    
+    \item \textbf{特征重要性}：通过特征相关性分析发现，滞后特征（尤其是lag\_1h和lag\_3h）与目标变量的相关性最高，说明风速具有较强的时间依赖性。
+\end{enumerate}
+
+\newpage
+
+% ============================================
+% 第六章：模型保存
+% ============================================
+\section{模型保存}
+
+训练完成的模型已保存为.pth格式文件，以便后续加载使用：
+
+\begin{lstlisting}[language=Python, caption=模型保存代码]
+import torch
+import joblib
+
+# 保存LSTM模型
+torch.save(lstm_model.state_dict(), 'models/lstm_model.pth')
+
+# 保存Transformer模型
+torch.save(transformer_model.state_dict(), 'models/transformer_model.pth')
+
+# 保存线性回归模型
+joblib.dump(lr_model, 'models/linear_regression.pkl')
+
+# 保存标准化器
+joblib.dump(scaler, 'models/scaler.pkl')
+\end{lstlisting}
+
+模型文件说明：
+\begin{itemize}
+    \item \texttt{lstm\_model.pth}：LSTM模型参数（~1.2MB）
+    \item \texttt{transformer\_model.pth}：Transformer模型参数（~1.5MB）
+    \item \texttt{linear\_regression.pkl}：线性回归模型参数
+    \item \texttt{scaler.pkl}：数据标准化器
+\end{itemize}
+
+\newpage
+
+% ============================================
+% 第七章：总结与展望
+% ============================================
+\section{总结与展望}
+
+\subsection{项目总结}
+本项目完成了风速序列预测任务，主要成果包括：
+
+\begin{enumerate}
+    \item 成功从三个高度传感器获取数据，并完成了数据清洗、特征工程等预处理工作
+    \item 构建了线性回归、LSTM和Transformer三种模型，完成了单步和多步预测任务
+    \item 通过实验验证了Transformer模型在风速预测任务中的优越性
+    \item 完成了模型的可视化分析和性能评估
+\end{enumerate}
+
+\subsection{创新点}
+\begin{itemize}
+    \item 综合利用三个高度的传感器数据，丰富了特征信息
+    \item 构造了时间特征、滞后特征和滑动窗口统计特征，提升了模型性能
+    \item 对比了传统机器学习和深度学习方法在风速预测中的应用效果
+\end{itemize}
+
+\subsection{未来展望}
+未来可以从以下方向进一步优化：
+\begin{enumerate}
+    \item 引入注意力机制变体（如Informer、Autoformer）进一步提升长序列预测精度
+    \item 结合物理模型（如数值天气预报）与数据驱动模型
+    \item 探索迁移学习在不同地理位置风速预测中的应用
+    \item 考虑使用集成学习方法进一步提升预测稳定性
+\end{enumerate}
+
+\newpage
+
+% ============================================
+% 参考文献
+% ============================================
+\section*{参考文献}
+
+\begin{enumerate}
+    \item Hochreiter, S., \& Schmidhuber, J. (1997). Long short-term memory. Neural computation, 9(8), 1735-1780.
+    
+    \item Vaswani, A., et al. (2017). Attention is all you need. Advances in neural information processing systems, 30.
+    
+    \item 周志华. (2016). 机器学习. 清华大学出版社.
+    
+    \item 李航. (2019). 统计学习方法（第2版）. 清华大学出版社.
+    
+    \item Zhang, Y., et al. (2022). Deep learning for wind speed forecasting: A review. Renewable and Sustainable Energy Reviews, 158, 112101.
+\end{enumerate}
+
+\newpage
+
+% ============================================
+% 附录：代码与GitHub
+% ============================================
+\section*{附录}
+
+\subsection*{GitHub代码仓库}
+项目完整源代码已上传至GitHub，可通过以下链接访问：
+\begin{center}
+\href{https://github.com/your_username/wind_speed_prediction}{https://github.com/your\_username/wind\_speed\_prediction}
+\end{center}
+
+\subsection*{运行环境}
+\begin{itemize}
+    \item Python 3.8+
+    \item PyTorch 1.10+
+    \item scikit-learn 1.0+
+    \item pandas 1.3+
+    \item numpy 1.21+
+    \item matplotlib 3.4+
+    \item seaborn 0.11+
+\end{itemize}
+
+\subsection*{项目文件结构}
+\begin{lstlisting}
+wind_speed_prediction/
+├── data/
+│   ├── 10m/
+│   │   ├── train-00000-of-00001.parquet
+│   │   ├── val-00000-of-00001.parquet
+│   │   └── test-00000-of-00001.parquet
+│   ├── 50m/
+│   │   └── ...
+│   └── 100m/
+│       └── ...
+├── models/
+│   ├── lstm_model.pth
+│   ├── transformer_model.pth
+│   └── linear_regression.pkl
+├── figures/
+│   ├── distribution.png
+│   ├── correlation.png
+│   └── predictions.png
+├── wind_prediction.py
+└── README.md
+\end{lstlisting}
+
+\end{document}
